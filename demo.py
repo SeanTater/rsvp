@@ -2,6 +2,32 @@
 import cv2
 import numpy as np
 import scipy.fft as fft
+import os
+
+
+def quality_check(original, compressed, num_embed):
+    """ Compare pixel to pixel quality of each frame
+
+        Accepts
+        -------
+        original (str): filename for original video
+        compressed (str): regenerated video from decomposition
+        num_embed (int): dimensionality of embedding
+
+    """
+    vd1 = cv2.VideoCapture()
+    vd1.open(original)
+    images1 = np.stack([vd1.read()[1] for i in range(24)])    
+
+    vd2 = cv2.VideoCapture()
+    vd2.open(compressed)
+    images2 = np.stack([vd2.read()[1] for i in range(24)])    
+
+    comp_ratio = os.stat(compressed).st_size / os.stat(original).st_size
+    mse = ((images2 - images1)**2).mean(axis=None)
+
+    with open("logs.dat", "a") as out:
+        out.write(f"{num_embed} {comp_ratio} {mse}\n")
 
 
 def webm_forward():
@@ -10,6 +36,7 @@ def webm_forward():
     images = np.stack([vc.read()[1] for i in range(24)])
     # Divide into 8x8x8 cubes
     frame_count, width, height, colors = images.shape
+    
     assert width % 8 == 0 and height % 8 == 0, "The image dimensions must be divisible by 8"
     vc.release()
     return images
@@ -200,12 +227,10 @@ def buf_backward(buf):
     )
     return np.sign(proj) * np.expm1(np.abs(proj)/14)
 
-
-    
-if __name__ == "__main__":
+def run_pipeline(num_embed):
     cubes = cubes_forward(webm_forward())
     #cubes = dct_forward(cubes)
-    base = svd_prep(cubes)
+    base = svd_prep(cubes, embed=num_embed)
     proj = svd_forward(base, cubes)
     buf = buf_forward(proj)
     base_buf = buf_forward(base)
@@ -219,3 +244,11 @@ if __name__ == "__main__":
     #reproj = dct_backward(reproj)
     newimages = cubes_backward(reproj)
     webm_backward(newimages.astype(np.uint8))
+    quality_check("snippet.webm", "undemo.mkv", num_embed)
+
+    
+if __name__ == "__main__":
+    for n in range(1,500,3):
+        run_pipeline(n)
+        print(f"Finished {n}")
+
