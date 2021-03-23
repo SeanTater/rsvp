@@ -23,7 +23,7 @@ def quality_check(original, compressed, num_embed):
     vd2.open(compressed)
     images2 = np.stack([vd2.read()[1] for i in range(24)])    
 
-    comp_ratio = os.stat(compressed).st_size / os.stat(original).st_size
+    comp_ratio = os.stat("proj.arr").st_size / os.stat(original).st_size
     mse = ((images2 - images1)**2).mean(axis=None)
 
     with open("logs.dat", "a") as out:
@@ -248,7 +248,7 @@ def run_pipeline(num_embed):
 
     
 if __name__ == "__main__":
-    for n in range(1,500,3):
+    for n in range(1,50,1):
         run_pipeline(n)
         print(f"Finished {n}")
 
