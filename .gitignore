@@ -3,6 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Project Specific
+*.dat
+*.arr
+*.mkv
+*.webm
+*.png
+
+
 # C extensions
 *.so
 
