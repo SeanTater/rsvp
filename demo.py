@@ -1,9 +1,114 @@
 #!/usr/bin/python3
 import cv2
 import numpy as np
-import scipy.fft as fft
 import os
 
+class CubeStep:
+    def __init__(self, cube_shape=(8,8,8), video_shape=None):
+        self.video_shape = video_shape
+        self.depth, self.width, self.height = self.cube_shape = cube_shape
+        self.colors = 3  # Purely for clarity
+        self.cube_size = 3
+        for d in cube_shape:
+            self.cube_size *= d
+    
+    def to_cubes(self, images):
+        """ Shatter a series of frames into 8x8x8x3 tensors
+
+            Accepts
+            -------
+            images : np.array of shape (frame_count, width, height, colors) and dtype uint8
+                The sequence of images to analyze.
+                The image shape must be a multiple of the cube size, no padding will be done.
+            
+            Returns
+            -------
+            np.array of (d, w, h, self.depth, self.width, self.height, self.colors)
+                where d, w, h are the time, width, and height of the video measured in cubes
+        """
+        if self.video_shape is not None and self.video_shape != images.shape:
+            raise ValueError("Video shape does not match input shape.")
+        else:
+            self.video_shape = images.shape
+        frame_count, width, height, colors = self.video_shape
+        t = images.reshape((
+            frame_count // self.depth,
+            self.depth,
+            width // self.width,
+            self.width,
+            height // self.height,
+            self.height,
+            colors
+        ))
+        # Make it a (x,y,z,8,8,8,3) tensor so it's a prism of cubes, by color
+        return np.moveaxis(t, [0,2,4,1,3,5,6], [0,1,2,3,4,5,6])
+
+    def to_matrix(self, cubes):
+        """ Flatten a cube of cubes into a single matrix
+
+            Accepts
+            -------
+            cubes : np.array of (d, w, h, self.depth, self.width, self.height, self.colors)
+                where d, w, h are the time, width, and height of the video measured in cubes
+            
+            Returns
+            -------
+            np.array of (cube_count, cube_volume)
+                where
+                cube_count = d*w*h,
+                d, w, h = the time, width, and height of the video measured in cubes,
+                cube_volume = self.depth * self.width * self.height * self.colors
+        """
+        # Copy improves locality later
+        return cubes.reshape((-1, self.cube_size)).copy()
+
+    def from_cubes(self, cubes):
+        """ Convert cubes back into normal frames
+        
+            Accepts
+            -------
+            cubes : np.array of (d, w, h, self.depth, self.width, self.height, self.colors)
+                where d, w, h are the time, width, and height of the video measured in cubes
+            
+            Returns
+            -------
+            np.array of shape (frame_count, width, height, colors) and dtype float32 (not uint8)
+                The sequence of images to analyze.
+                The image shape must be a multiple of the cube size, no padding will be done.
+        """
+        d,w,h = cubes.shape[:3]
+        uncube = np.moveaxis(cubes, [0,1,2,3,4,5,6], [0,2,4,1,3,5,6])
+        return uncube.reshape((d*self.depth, w*self.width, h*self.height, self.colors))
+    
+    def from_matrix(self, samples):
+        """ Convert cubes back into normal frames
+        
+            Accepts
+            -------
+            samples : np.array of (cube_count, cube_volume)
+                where
+                cube_count = d*w*h,
+                d, w, h = the time, width, and height of the video measured in cubes,
+                cube_volume = self.depth * self.width * self.height * self.colors
+                
+            
+            Returns
+            -------
+            np.array of (d, w, h, self.depth, self.width, self.height, self.colors)
+                where d, w, h are the time, width, and height of the video measured in cubes
+        """
+        if self.video_shape is None:
+            raise ValueError("Video shape unspecified when converting from matrix.")
+        frame_count, width, height, colors = self.video_shape
+        return samples.reshape((
+            frame_count // self.depth,
+            width // self.width,
+            height // self.height,
+            self.depth,
+            self.width,
+            self.height,
+            colors
+        ))
 
 def quality_check(original, compressed, num_embed):
     """ Compare pixel to pixel quality of each frame
@@ -30,6 +135,7 @@ def quality_check(original, compressed, num_embed):
         out.write(f"{num_embed} {comp_ratio} {mse}\n")
 
 
+
 def webm_forward():
     vc = cv2.VideoCapture()
     vc.open("snippet.webm")
@@ -39,7 +145,7 @@ def webm_forward():
     
     assert width % 8 == 0 and height % 8 == 0, "The image dimensions must be divisible by 8"
     vc.release()
-    return images
+    return images.astype(np.float32)
 
 def webm_backward(images):
     """ Save images to a video file as VP8
@@ -57,84 +163,23 @@ def webm_backward(images):
     vw.release()
 
 
-def cubes_forward(images):
-    """ Shatter a series of frames into 8x8x8x3 tensors
 
-        Accepts
-        -------
-        images : np.array of shape (frame_count, width, height, colors) and dtype uint8
-            The sequence of images to analyze.
-            The width, height, and frame count must all be multiples of 8.
-    """
-    frame_count, width, height, colors = images.shape
-    t = images.reshape((frame_count // 8, 8, width // 8, 8, height // 8, 8, colors))
-    # Make it a (x,y,z,8,8,8,3) tensor so it's a prism of cubes, by color
-    t = np.moveaxis(t, [0,2,4,1,3,5,6], [0,1,2,3,4,5,6])
-    return t
 
-def cubes_backward(cubes):
-    """ Convert cubes back into normal frames
-    
-        Accepts
-        -------
-        cubes : np.array of (d, w, h, 8, 8, 8, 3)
-            where d, w, h are the time, width, and height of the video measured in cubes
-        
-        Returns
-        -------
-        np.array of shape (frame_count, width, height, colors) and dtype uint8
-            The sequence of images to analyze.
-            The width, height, and frame count must all be multiples of 8.
-        
-    
-    """
-    d,w,h = cubes.shape[:3]
-    uncube = np.moveaxis(cubes, [0,1,2,3,4,5,6], [0,2,4,1,3,5,6])
-    return uncube.reshape((d*8, w*8, h*8, 3))
-
-def dct_forward(cubes):
-    """ Perform a DCT on every cube
-    
-        Accepts
-        -------
-        cubes : np.array of (d, w, h, 8, 8, 8, 3)
-            where d, w, h are the time, width, and height of the video measured in cubes
-            as would be useful to pass to reassemble()
-        
-        Returns
-        -------
-        np.array just like cubes with frequency domain information instead
-    """
-    return fft.dctn(cubes, axes=(3,4,5))
-    
-def dct_backward(cubes):
-    """ Perform a IDCT on every cube
-    
-        Accepts
-        -------
-        cubes : np.array of (d, w, h, 8, 8, 8, 3)
-            where d, w, h are the time, width, and height of the video measured in cubes
-            as would be useful to pass to reassemble()
-        
-        Returns
-        -------
-        np.array just like cubes with time domain information instead
-    """
-    return fft.idctn(cubes, axes=(3,4,5))
-
-def svd_prep(cubes, embed=50, colors=3):
+def svd_prep(samples, embed=50):
     """ Create a base to summarize video segments
 
         Accepts
         -------
-        cubes : np.array of shape (N,8,8,8,3) and dtype uint8
-            The array of video segments to analyze
+        samples : np.array of (cube_count, cube_volume)
+            where
+            cube_count = d*w*h,
+            d, w, h = the time, width, and height of the video measured in cubes,
+            cube_volume = self.depth * self.width * self.height * self.colors
         
         Returns
         -------
-        np.array of shape (8*8*8*3, embed)
+        np.array of shape (cube_volume, embed)
     """
-    samples = cubes.reshape((-1, 8*8*8*colors))
 
     # Try a basic SVD approximation
     #base = np.random.uniform(0, 1, (8*8*8*colors, embed))
@@ -142,49 +187,54 @@ def svd_prep(cubes, embed=50, colors=3):
     #base = np.linalg.qr(np.dot(samples, base))[0]
     #base = np.linalg.qr(np.dot(samples, base))[0]
     
-    return np.linalg.svd(samples[::13], full_matrices=False)[2][:embed].T.astype(np.float32)
+    return np.linalg.svd(samples[::13], full_matrices=False)[2][:embed].T
 
 def svd_forward(base, cubes):
     """ Encode images with eigenvectors, using an existing base
 
         Accepts
         -------
-        base : np.array of shape (8*8*8*colors, embed)
+        base : np.array of shape (cube_volume, embed)
             Linear basis for description of video segments, generated by svd_prep()
-        cubes : np.array of shape (N,8,8,8,3) and dtype uint8
-            The array of video segments to analyze
+        cubes : np.array of (cube_count, cube_volume)
+            where
+            cube_count = d*w*h,
+            d, w, h = the time, width, and height of the video measured in cubes,
+            cube_volume = self.depth * self.width * self.height * self.colors
 
         Returns
         -------
-        np.array of shape (w*h*f, embed)
-            where w = width // 8,
-                  h = height // 8
-                  f = frames // 8
+        np.array of (cube_count, embed)
+            where
+            cube_count = d*w*h,
+            d, w, h = the time, width, and height of the video measured in cubes,
+            cube_volume = self.depth * self.width * self.height * self.colors
     """
-    d,w,h = cubes.shape[:3]
-    s,e = base.shape
-    return np.dot(cubes.reshape((-1, 8*8*8*3)), base).reshape((d,w,h,e))
+    return np.dot(cubes, base)
 
 def svd_backward(base, proj):
     """ Decode cubes back from embedding
         
         Accepts
         -------
-        base : np.array of shape (8*8*8*colors, embed)
+        base : np.array of shape (cube_volume, embed)
             Linear basis for description of video segments, generated by svd_prep()
-        proj : np.array of shape (d,w,h,embed)
-            where d, w, h are the time, width, and height of the video measured in cubes
+        proj : np.array of (cube_count, embed)
+            where
+            cube_count = d*w*h,
+            d, w, h = the time, width, and height of the video measured in cubes,
+            cube_volume = self.depth * self.width * self.height * self.colors
         
         Returns
         -------
-        np.array of (d, w, h, 8, 8, 8, 3)
-            where d, w, h are the time, width, and height of the video measured in cubes
-            as would be useful to pass to reassemble()
+        np.array of (cube_count, cube_volume)
+            where
+            cube_count = d*w*h,
+            d, w, h = the time, width, and height of the video measured in cubes,
+            cube_volume = self.depth * self.width * self.height * self.colors
         
     """
-    d,w,h = proj.shape[:3]
-    s,e = base.shape
-    reproj = np.dot(proj.reshape((-1, e)), base.T).reshape((d,w,h,8,8,8,3))
+    reproj = np.dot(proj, base.T)
     return np.clip(reproj, 0, 255)
 
 def buf_forward(proj):
@@ -228,8 +278,8 @@ def buf_backward(buf):
     return np.sign(proj) * np.expm1(np.abs(proj)/14)
 
 def run_pipeline(num_embed):
-    cubes = cubes_forward(webm_forward())
-    #cubes = dct_forward(cubes)
+    cube_step = CubeStep()
+    cubes = cube_step.to_matrix(cube_step.to_cubes(webm_forward()))
     base = svd_prep(cubes, embed=num_embed)
     proj = svd_forward(base, cubes)
     buf = buf_forward(proj)
@@ -241,8 +291,7 @@ def run_pipeline(num_embed):
     proj = buf_backward(buf)
     #base = buf_backward(base_buf)
     reproj = svd_backward(base, proj)
-    #reproj = dct_backward(reproj)
-    newimages = cubes_backward(reproj)
+    newimages = cube_step.from_cubes(cube_step.from_matrix(reproj))
     webm_backward(newimages.astype(np.uint8))
     quality_check("snippet.webm", "undemo.mkv", num_embed)
 
