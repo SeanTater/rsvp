@@ -110,29 +110,23 @@ class CubeStep:
             colors
         ))
 
-def quality_check(original, compressed, num_embed):
+def quality_check(original, compressed, new,  num_embed):
     """ Compare pixel to pixel quality of each frame
 
         Accepts
         -------
-        original (str): filename for original video
-        compressed (str): regenerated video from decomposition
+        original (np.array): array containing original video
+        compressed (bytes):  compressed video bytes
+        new (np.array): array containing new video
         num_embed (int): dimensionality of embedding
 
-    """
-    vd1 = cv2.VideoCapture()
-    vd1.open(original)
-    images1 = np.stack([vd1.read()[1] for i in range(24)])    
-
-    vd2 = cv2.VideoCapture()
-    vd2.open(compressed)
-    images2 = np.stack([vd2.read()[1] for i in range(24)])    
-
-    comp_ratio = os.stat("proj.arr").st_size / os.stat(original).st_size
-    mse = ((images2 - images1)**2).mean(axis=None)
+    """ 
+    comp_ratio = len(compressed) / original.size
+    mse = ((new - original)**2).mean()
+    psnr = 20 * np.log(255) / np.log(10) - 10 * np.log(mse) / np.log(10)
 
     with open("logs.dat", "a") as out:
-        out.write(f"{num_embed} {comp_ratio} {mse}\n")
+        out.write(f"{num_embed} {comp_ratio} {mse} {psnr}\n")
 
 
 
@@ -292,8 +286,8 @@ def run_pipeline(num_embed):
     #base = buf_backward(base_buf)
     reproj = svd_backward(base, proj)
     newimages = cube_step.from_cubes(cube_step.from_matrix(reproj))
-    webm_backward(newimages.astype(np.uint8))
-    quality_check("snippet.webm", "undemo.mkv", num_embed)
+    #webm_backward(newimages.astype(np.uint8))
+    quality_check(cubes, buf+base_buf, reproj, num_embed)
 
     
 if __name__ == "__main__":
