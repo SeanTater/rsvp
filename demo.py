@@ -1,7 +1,47 @@
 #!/usr/bin/python3
 import cv2
 import numpy as np
-import os
+import sqlite3
+import time
+
+class QualityCheck:
+    def __init__(self):
+        """ Record model runs """
+        self.db = sqlite3.connect("logs.db", isolation_level=None)
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS ModelRun(
+                run_id INT,
+                num_embed INT,
+                original_size INT,
+                compressed_size INT,
+                mse REAL,
+                psnr REAL,
+                cube_shape TEXT
+            );
+        """)
+        self.run_id = int(time.time())
+        
+    
+    def quality_check(self, original, compressed, new, num_embed, cube_shape):
+        """ Compare pixel to pixel quality of each frame
+
+            Accepts
+            -------
+            original (np.array): array containing original video
+            compressed (bytes):  compressed video bytes
+            new (np.array): array containing new video
+            num_embed (int): dimensionality of embedding
+
+        """ 
+        comp_ratio = len(compressed) / original.size
+        mse = float(((new - original)**2).mean())
+        psnr = 20 * np.log(255) / np.log(10) - 10 * np.log(mse) / np.log(10)
+
+        self.db.execute(
+            "INSERT INTO ModelRun(run_id, num_embed, original_size, compressed_size, mse, psnr, cube_shape)"
+            " VALUES (?,?,?,?,?,?,?);",
+            (self.run_id, num_embed, original.size, len(compressed), mse, psnr, cube_shape)
+        )
 
 class CubeStep:
     def __init__(self, cube_shape=(8,8,8), video_shape=None):
@@ -110,30 +150,6 @@ class CubeStep:
             colors
         ))
 
-def quality_check(original, compressed, num_embed):
-    """ Compare pixel to pixel quality of each frame
-
-        Accepts
-        -------
-        original (str): filename for original video
-        compressed (str): regenerated video from decomposition
-        num_embed (int): dimensionality of embedding
-
-    """
-    vd1 = cv2.VideoCapture()
-    vd1.open(original)
-    images1 = np.stack([vd1.read()[1] for i in range(24)])    
-
-    vd2 = cv2.VideoCapture()
-    vd2.open(compressed)
-    images2 = np.stack([vd2.read()[1] for i in range(24)])    
-
-    comp_ratio = os.stat("proj.arr").st_size / os.stat(original).st_size
-    mse = ((images2 - images1)**2).mean(axis=None)
-
-    with open("logs.dat", "a") as out:
-        out.write(f"{num_embed} {comp_ratio} {mse}\n")
-
 
 
 def webm_forward():
@@ -165,7 +181,7 @@ def webm_backward(images):
 
 
 
-def svd_prep(samples, embed=50):
+def svd_prep(samples, embed=50, subsample=13):
     """ Create a base to summarize video segments
 
         Accepts
@@ -186,8 +202,8 @@ def svd_prep(samples, embed=50):
     #breakpoint()
     #base = np.linalg.qr(np.dot(samples, base))[0]
     #base = np.linalg.qr(np.dot(samples, base))[0]
-    
-    return np.linalg.svd(samples[::13], full_matrices=False)[2][:embed].T
+    subsample = samples[np.random.randint(0, samples.shape[0], 250)]
+    return np.linalg.svd(subsample, full_matrices=False)[2][:embed].T
 
 def svd_forward(base, cubes):
     """ Encode images with eigenvectors, using an existing base
@@ -278,7 +294,7 @@ def buf_backward(buf):
     return np.sign(proj) * np.expm1(np.abs(proj)/14)
 
 def run_pipeline(num_embed):
-    cube_step = CubeStep()
+    cube_step = CubeStep(cube_shape=(2,2,2))
     cubes = cube_step.to_matrix(cube_step.to_cubes(webm_forward()))
     base = svd_prep(cubes, embed=num_embed)
     proj = svd_forward(base, cubes)
@@ -292,12 +308,13 @@ def run_pipeline(num_embed):
     #base = buf_backward(base_buf)
     reproj = svd_backward(base, proj)
     newimages = cube_step.from_cubes(cube_step.from_matrix(reproj))
-    webm_backward(newimages.astype(np.uint8))
-    quality_check("snippet.webm", "undemo.mkv", num_embed)
+    #webm_backward(newimages.astype(np.uint8))
+    return (cubes, base_buf+buf, reproj, num_embed)
 
     
 if __name__ == "__main__":
-    for n in range(1,50,1):
-        run_pipeline(n)
+    qlog = QualityCheck()
+    for n in range(1,50,4):
+        qlog.quality_check(*run_pipeline(n), cube_shape="2,2,2")
         print(f"Finished {n}")
 
